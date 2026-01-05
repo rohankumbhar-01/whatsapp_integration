@@ -1,0 +1,114 @@
+{
+    "actions": [],
+    "allow_import": 1,
+    "autoname": "format:WA-{company}",
+    "creation": "2024-01-02 20:55:00.000000",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "integration_enabled",
+        "company",
+        "session_id",
+        "connection_status",
+        "last_connected",
+        "webhook_token",
+        "node_url"
+    ],
+    "fields": [
+        {
+            "fieldname": "integration_enabled",
+            "fieldtype": "Check",
+            "label": "Enabled"
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Company",
+            "options": "Company",
+            "reqd": 1
+        },
+        {
+            "fetch_from": "company",
+            "fieldname": "session_id",
+            "fieldtype": "Data",
+            "label": "Session ID",
+            "read_only": 1
+        },
+        {
+            "default": "Disconnected",
+            "fieldname": "connection_status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Connection Status",
+            "options": "Disconnected\nConnecting\nQR Scan Required\nConnected",
+            "read_only": 1
+        },
+        {
+            "fieldname": "last_connected",
+            "fieldtype": "Datetime",
+            "label": "Last Connected",
+            "read_only": 1
+        },
+        {
+            "fieldname": "webhook_token",
+            "fieldtype": "Password",
+            "label": "Webhook Token",
+            "description": "Token used by Node service to authenticate its requests to Frappe"
+        },
+        {
+            "default": "http://127.0.0.1:3000",
+            "fieldname": "node_url",
+            "fieldtype": "Data",
+            "label": "Node Service URL",
+            "description": "URL of the Node.js WhatsApp service (default: http://127.0.0.1:3000)"
+        },
+        {
+            "fieldname": "test_section",
+            "fieldtype": "Section Break",
+            "label": "Test Messaging"
+        },
+        {
+            "fieldname": "test_receiver",
+            "fieldtype": "Data",
+            "label": "Test Receiver Number",
+            "description": "Format: CountryCode + Number (e.g., 919876543210)"
+        },
+        {
+            "fieldname": "test_message",
+            "fieldtype": "Small Text",
+            "label": "Test Message"
+        },
+        {
+            "depends_on": "eval:doc.connection_status=='Connected'",
+            "fieldname": "send_test_message",
+            "fieldtype": "Button",
+            "label": "Send Test Message"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [],
+    "modified": "2024-01-02 20:55:00.000000",
+    "modified_by": "Administrator",
+    "module": "Whatsapp Integration",
+    "name": "WhatsApp Settings",
+    "naming_rule": "Expression",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+}

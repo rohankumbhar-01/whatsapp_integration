@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Node.js
+apps/whatsapp_integration/whatsapp_node_service/node_modules/
+whatsapp_node_service/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# WhatsApp Sessions
+apps/whatsapp_integration/whatsapp_node_service/sessions/
+whatsapp_node_service/sessions/
+*.auth_info.json
+
+# Logs
+*.log
+whatsapp_node_service/*.log
+whatsapp_node_service/*.pid
+
+# Frappe
+*.pyc
+*.swp
+.DS_Store

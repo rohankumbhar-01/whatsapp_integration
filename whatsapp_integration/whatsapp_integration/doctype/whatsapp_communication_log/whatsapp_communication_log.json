@@ -1,0 +1,68 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2026-01-03 00:11:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "status",
+        "message_type",
+        "receiver",
+        "error_message",
+        "company"
+    ],
+    "fields": [
+        {
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "label": "Status",
+            "options": "Success\nError"
+        },
+        {
+            "fieldname": "message_type",
+            "fieldtype": "Data",
+            "label": "Message Type"
+        },
+        {
+            "fieldname": "receiver",
+            "fieldtype": "Data",
+            "label": "Receiver"
+        },
+        {
+            "fieldname": "error_message",
+            "fieldtype": "Text Editor",
+            "label": "Error Message"
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [],
+    "modified": "2026-01-03 00:11:00.000000",
+    "modified_by": "Administrator",
+    "module": "Whatsapp Integration",
+    "name": "WhatsApp Communication Log",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "creation",
+    "sort_order": "DESC",
+    "states": []
+}

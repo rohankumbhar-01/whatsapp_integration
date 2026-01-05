@@ -1,0 +1,101 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2026-01-03 00:10:00.000000",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+        "sender",
+        "sender_name",
+        "receiver",
+        "message",
+        "media_attachment",
+        "message_id",
+        "message_type",
+        "company",
+        "customer",
+        "contact"
+    ],
+    "fields": [
+        {
+            "fieldname": "sender",
+            "fieldtype": "Data",
+            "label": "Sender"
+        },
+        {
+            "fieldname": "sender_name",
+            "fieldtype": "Data",
+            "label": "Sender Name"
+        },
+        {
+            "fieldname": "receiver",
+            "fieldtype": "Data",
+            "label": "Receiver"
+        },
+        {
+            "fieldname": "message",
+            "fieldtype": "Small Text",
+            "label": "Message"
+        },
+        {
+            "fieldname": "media_attachment",
+            "fieldtype": "Attach",
+            "label": "Media Attachment"
+        },
+        {
+            "fieldname": "message_id",
+            "fieldtype": "Data",
+            "label": "Message ID",
+            "unique": 1
+        },
+        {
+            "fieldname": "message_type",
+            "fieldtype": "Select",
+            "label": "Message Type",
+            "options": "Incoming\nOutgoing"
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company"
+        },
+        {
+            "fieldname": "customer",
+            "fieldtype": "Link",
+            "label": "Customer",
+            "options": "Customer"
+        },
+        {
+            "fieldname": "contact",
+            "fieldtype": "Link",
+            "label": "Contact",
+            "options": "Contact"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [],
+    "modified": "2026-01-03 00:25:00.000000",
+    "modified_by": "Administrator",
+    "module": "Whatsapp Integration",
+    "name": "WhatsApp Message",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "creation",
+    "sort_order": "DESC",
+    "states": []
+}
