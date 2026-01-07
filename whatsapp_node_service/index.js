@@ -120,12 +120,25 @@ async function getPhoneNumberFromJid(jid, sock) {
 
             // Fallback: Query WhatsApp to resolve LID to JID
             try {
+                // Try searching for the LID as a phone user
                 const [result] = await sock.onWhatsApp(jid);
-                if (result && result.jid) {
+                if (result && result.jid && result.jid.includes('@s.whatsapp.net')) {
                     const resolvedPhone = result.jid.split('@')[0];
                     console.log(`Resolved LID ${baseJid} to phone ${resolvedPhone} via WhatsApp query`);
-                    // Cache it
+
+                    // Cache it in memory
                     lidToPhoneMap.set(baseJid, resolvedPhone);
+
+                    // Also save to disk if we can find the session dir
+                    const sessionId = Array.from(sessions.entries()).find(([k, v]) => v.sock === sock)?.[0];
+                    if (sessionId) {
+                        const sessionDir = path.join(__dirname, 'sessions', sessionId);
+                        if (fs.existsSync(sessionDir)) {
+                            const mappingFile = path.join(sessionDir, `lid-mapping-${baseJid}_reverse.json`);
+                            fs.writeFileSync(mappingFile, JSON.stringify(resolvedPhone));
+                        }
+                    }
+
                     return resolvedPhone;
                 }
             } catch (e) {
@@ -328,8 +341,22 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
                 if (contact.lid && contact.id) {
                     const lid = contact.lid.split('@')[0];
                     const phone = contact.id.split('@')[0].split(':')[0];
-                    lidToPhoneMap.set(lid, phone);
-                    console.log(`Contact mapping stored: LID ${lid} -> Phone ${phone}`);
+
+                    if (lidToPhoneMap.get(lid) !== phone) {
+                        lidToPhoneMap.set(lid, phone);
+                        console.log(`Contact mapping stored: LID ${lid} -> Phone ${phone}`);
+
+                        // Save to disk for persistence
+                        const sessionDir = path.join(__dirname, 'sessions', sessionId);
+                        if (fs.existsSync(sessionDir)) {
+                            const mappingFile = path.join(sessionDir, `lid-mapping-${lid}_reverse.json`);
+                            try {
+                                fs.writeFileSync(mappingFile, JSON.stringify(phone));
+                            } catch (e) {
+                                console.error(`Failed to save LID mapping for ${lid}:`, e);
+                            }
+                        }
+                    }
                 }
             }
         });

@@ -20,7 +20,8 @@ def validate_phone_number(phone: str) -> Optional[str]:
         return None
 
     # Check if it's already a group ID or LID
-    if "@" in phone or "-" in phone or (phone.isdigit() and len(phone) > 15):
+    # LIDs are usually 14-16 digits long and used as internal WhatsApp IDs
+    if "@" in phone or "-" in phone or (phone.isdigit() and len(phone) >= 14):
         return phone
 
     # Remove all non-digit characters for regular numbers
@@ -876,10 +877,24 @@ def save_whatsapp_msg(
                     if resolved_phone:
                         frappe.logger().info(f"SUCCESS: Resolved LID {raw_phone} to {resolved_phone} via Contact {sender_name}")
                         real_phone = resolved_phone
-                    else:
-                        frappe.logger().warning(f"WAIT: Found contact {sender_name} for LID {raw_phone} but mobile_no {contact_phone} is invalid")
                 else:
-                    frappe.logger().warning(f"FAIL: Could not resolve LID {raw_phone} - no contact phone found for name '{sender_name}'")
+                    # Fallback: Try to find previous messages with the same pushName that have a real phone number
+                    previous_msg_phone = frappe.db.get_value(
+                        "WhatsApp Message",
+                        {
+                            "sender_name": sender_name,
+                            "sender": ["not like", "Me"],
+                            "is_group_message": 0
+                        },
+                        "sender",
+                        order_by="creation desc"
+                    )
+                    
+                    if previous_msg_phone and len(previous_msg_phone) < 14:
+                        frappe.logger().info(f"SUCCESS: Resolved LID {raw_phone} to {previous_msg_phone} via History for {sender_name}")
+                        real_phone = previous_msg_phone
+                    else:
+                        frappe.logger().warning(f"FAIL: Could not resolve LID {raw_phone} - no history or contact found for name '{sender_name}'")
             else:
                 frappe.logger().warning(f"FAIL: Could not resolve LID {raw_phone} - sender_name is empty")
 

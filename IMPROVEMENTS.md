@@ -572,4 +572,4 @@ Before deploying to production:
 
 Generated: 2026-01-03
 Version: 1.0.0
-Author: Claude Code Assistant
+Author: Rohan Kumbhar

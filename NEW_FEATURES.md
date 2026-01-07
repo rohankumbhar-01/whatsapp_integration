@@ -502,4 +502,4 @@ Your WhatsApp integration now has **complete feature parity** with WhatsApp Web/
 
 Generated: 2026-01-03
 Version: 2.0.0
-Author: Claude Code Assistant
+Author: Rohan Kumbhar

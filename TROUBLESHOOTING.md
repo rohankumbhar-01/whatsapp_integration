@@ -270,4 +270,4 @@ If issues persist:
 
 **Last Updated**: 2026-01-03
 **Version**: 2.0.1
-**Maintainer**: Claude Code Assistant
+**Maintainer**: Rohan Kumbhar
