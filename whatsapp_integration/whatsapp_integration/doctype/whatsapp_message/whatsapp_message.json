@@ -13,6 +13,12 @@
         "media_attachment",
         "message_id",
         "message_type",
+        "message_status",
+        "is_group_message",
+        "group_id",
+        "group_name",
+        "reply_to_message_id",
+        "reply_to_message_text",
         "company",
         "customer",
         "contact"
@@ -56,6 +62,37 @@
             "options": "Incoming\nOutgoing"
         },
         {
+            "fieldname": "message_status",
+            "fieldtype": "Select",
+            "label": "Message Status",
+            "options": "Sent\nDelivered\nRead\nFailed"
+        },
+        {
+            "fieldname": "is_group_message",
+            "fieldtype": "Check",
+            "label": "Is Group Message"
+        },
+        {
+            "fieldname": "group_id",
+            "fieldtype": "Data",
+            "label": "Group ID"
+        },
+        {
+            "fieldname": "group_name",
+            "fieldtype": "Data",
+            "label": "Group Name"
+        },
+        {
+            "fieldname": "reply_to_message_id",
+            "fieldtype": "Data",
+            "label": "Reply To (ID)"
+        },
+        {
+            "fieldname": "reply_to_message_text",
+            "fieldtype": "Small Text",
+            "label": "Reply To (Text)"
+        },
+        {
             "fieldname": "company",
             "fieldtype": "Link",
             "label": "Company",
@@ -76,7 +113,7 @@
     ],
     "index_web_pages_for_search": 1,
     "links": [],
-    "modified": "2026-01-03 00:25:00.000000",
+    "modified": "2026-01-07 14:30:00.000000",
     "modified_by": "Administrator",
     "module": "Whatsapp Integration",
     "name": "WhatsApp Message",

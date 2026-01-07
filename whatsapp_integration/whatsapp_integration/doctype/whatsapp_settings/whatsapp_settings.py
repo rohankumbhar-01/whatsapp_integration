@@ -20,7 +20,14 @@ def get_qr_code(name):
     try:
         # Use full path for callback
         callback_method = "whatsapp_integration.whatsapp_integration.api.handle_callback"
+        
+        # Determine Webhook URL (Dynamic vs Manual Override for Dev)
         webhook_url = frappe.utils.get_url(f"/api/method/{callback_method}")
+        
+        # Only allow override if developer_mode is ON in site_config.json
+        if frappe.conf.developer_mode and doc.webhook_url_override:
+            webhook_url = f"{doc.webhook_url_override.rstrip('/')}/api/method/{callback_method}"
+            frappe.logger().info(f"WhatsApp: Using Webhook URL Override: {webhook_url}")
         
         response = requests.post(f"{node_url}/sessions/start", json={
             "sessionId": session_id,

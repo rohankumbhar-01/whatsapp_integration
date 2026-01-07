@@ -12,7 +12,8 @@
         "connection_status",
         "last_connected",
         "webhook_token",
-        "node_url"
+        "node_url",
+        "webhook_url_override"
     ],
     "fields": [
         {
@@ -62,6 +63,12 @@
             "fieldtype": "Data",
             "label": "Node Service URL",
             "description": "URL of the Node.js WhatsApp service (default: http://127.0.0.1:3000)"
+        },
+        {
+            "fieldname": "webhook_url_override",
+            "fieldtype": "Data",
+            "label": "Webhook URL Override (Dev Only)",
+            "description": "Example: http://localhost:8002. Only used if site is in developer_mode."
         },
         {
             "fieldname": "test_section",

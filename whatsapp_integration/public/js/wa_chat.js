@@ -2,24 +2,24 @@ frappe.provide('whatsapp.chat');
 
 whatsapp.chat.Widget = class {
     constructor() {
+        console.log("WhatsApp Widget v2.2 - Group Fix - HARD RELOAD DONE");
         this.active_number = null;
         this.company = frappe.defaults.get_default('company');
         this.connection_check_interval = null;
         this.is_loading = false;
         this.retry_count = 0;
         this.max_retries = 3;
+        this.is_active_group = false;
 
         this.render();
         this.bind_events();
         this.listen_realtime();
 
-        // Check connection immediately and then every 45 seconds (reduced from 30)
         this.check_connection();
         this.connection_check_interval = setInterval(() => this.check_connection(), 45000);
     }
 
     destroy() {
-        // Cleanup when widget is destroyed
         if (this.connection_check_interval) {
             clearInterval(this.connection_check_interval);
         }
@@ -59,6 +59,14 @@ whatsapp.chat.Widget = class {
                             <button class="wa-send-btn" id="waSend"><i class="fa fa-send"></i></button>
                         </div>
                     </div>
+
+                    <div id="waGroupInfo" class="wa-group-info">
+                        <div class="wa-group-info-header">
+                            <i class="fa fa-arrow-left" id="waGroupInfoBack" style="cursor:pointer"></i>
+                            <span style="font-weight:bold; margin-left:15px;">Group Info</span>
+                        </div>
+                        <div class="wa-group-member-list" id="waMemberList"></div>
+                    </div>
                 </div>
                 <div class="wa-chat-button" id="waChatToggle">
                     <i class="fa fa-whatsapp"></i>
@@ -66,52 +74,43 @@ whatsapp.chat.Widget = class {
             </div>
         `;
         $('body').append(html);
-        this.check_connection();
-        this.load_recent_chats();
     }
 
     bind_events() {
         $('#waChatToggle').on('click', () => {
             $('#waChatWindow').toggleClass('active');
-            if ($('#waChatWindow').hasClass('active')) this.load_recent_chats();
         });
 
-        $('.wa-close').on('click', () => $('#waChatWindow').removeClass('active'));
+        $('.wa-close').on('click', (e) => {
+            e.stopPropagation();
+            $('#waChatWindow').removeClass('active');
+        });
 
         $('#waBack').on('click', () => this.show_inbox());
 
-        $('#waVoiceCall').on('click', () => {
-            if (this.active_number && typeof this.init_call_overlay === 'function') {
-                this.init_call_overlay('voice');
-            } else if (this.active_number) {
-                const phone = this.active_number.replace(/[+\-\s]/g, '');
-                window.open(`https://wa.me/${phone}`, '_blank');
+        $('.wa-chat-header').on('click', (e) => {
+            if ($(e.target).closest('.wa-close, .wa-back-btn, #waVideoCall, #waVoiceCall').length) return;
+            if (this.is_active_group && this.active_number) {
+                this.show_group_info();
             }
         });
 
-        $('#waVideoCall').on('click', () => {
-            if (this.active_number && typeof this.init_call_overlay === 'function') {
-                this.init_call_overlay('video');
-            } else if (this.active_number) {
-                const phone = this.active_number.replace(/[+\-\s]/g, '');
-                window.open(`https://wa.me/${phone}`, '_blank');
-            }
+        $('#waGroupInfoBack').on('click', () => {
+            $('#waGroupInfo').hide();
         });
 
         $('#waSend').on('click', () => this.send_message());
-
         $('#waInput').on('keypress', (e) => {
             if (e.which == 13) this.send_message();
         });
 
-        $('#waSearch').on('keyup', (e) => {
-            const query = $('#waSearch').val().trim();
-            if (query.length < 3) {
+        $('#waSearch').on('input', (e) => {
+            const query = $(e.target).val();
+            if (query.length < 2) {
                 if (query.length === 0) this.load_recent_chats();
                 return;
             }
 
-            // Debounce search
             clearTimeout(this.search_timeout);
             this.search_timeout = setTimeout(() => {
                 frappe.call({
@@ -131,24 +130,18 @@ whatsapp.chat.Widget = class {
                                         </div>
                                     </div>
                                 `);
-                                item.on('click', () => this.open_chat(res.phone, res.name));
+                                item.on('click', () => {
+                                    const isGroup = res.phone.includes('-') || res.phone.length >= 15;
+                                    this.open_chat(res.phone, res.name, isGroup);
+                                });
                                 list.append(item);
                             });
                         } else {
-                            list.append('<div style="padding: 20px; text-align:center; color:#888;">No contacts found. Press Enter to start chat with number.</div>');
+                            list.append('<div style="padding: 20px; text-align:center; color:#888;">No contacts found.</div>');
                         }
                     }
                 });
             }, 500);
-        });
-
-        $('#waSearch').on('keypress', (e) => {
-            if (e.which == 13) {
-                const val = $('#waSearch').val().trim();
-                if (/^\d+$/.test(val.replace(/[+\-\s]/g, ''))) {
-                    this.open_chat(val.replace(/[+\-\s]/g, ''), 'New Chat');
-                }
-            }
         });
     }
 
@@ -156,27 +149,24 @@ whatsapp.chat.Widget = class {
         try {
             const response = await frappe.call({
                 method: 'whatsapp_integration.whatsapp_integration.api.get_system_status',
-                args: { company: this.company },
-                error: (r) => {
-                    this.update_status('Error', '#ff4d4d');
-                    this.retry_count++;
-                }
+                args: { company: this.company }
             });
 
             if (response && response.message) {
                 const status = response.message.status;
-                this.retry_count = 0; // Reset on success
+                const statusEl = $('#waStatus');
+
+                if (statusEl.attr('data-is-group') === '1') {
+                    statusEl.html('<span style="color:#25D366; font-weight:bold;">● Group Chat (v2)</span>');
+                    return;
+                }
 
                 switch (status) {
                     case 'Connected':
                         this.update_status('Online', '#25D366');
                         break;
                     case 'Disconnected':
-                    case 'Disabled':
                         this.update_status('Offline', '#ff4d4d');
-                        break;
-                    case 'QR Scan Required':
-                        this.update_status('Scan QR', '#FFA500');
                         break;
                     default:
                         this.update_status(status, '#888');
@@ -184,58 +174,11 @@ whatsapp.chat.Widget = class {
             }
         } catch (error) {
             console.error('Connection check failed:', error);
-            this.update_status('Error', '#ff4d4d');
         }
     }
 
     update_status(text, color) {
         $('#waStatus').text(text).css('color', color);
-    }
-
-    async load_recent_chats() {
-        const list = $('#waChatList');
-
-        // Show loading indicator
-        list.html('<div style="padding: 20px; text-align:center; color:#888;"><i class="fa fa-spinner fa-spin"></i> Loading chats...</div>');
-
-        try {
-            const response = await frappe.call({
-                method: 'whatsapp_integration.whatsapp_integration.api.get_recent_chats',
-                args: { limit: 50 }
-            });
-
-            list.empty();
-
-            if (response && response.message && response.message.length) {
-                response.message.forEach(chat => {
-                    const firstLetter = chat.sender_full_name ? chat.sender_full_name[0].toUpperCase() : '?';
-                    const truncatedMsg = this.truncate_text(chat.last_msg || '', 50);
-
-                    const item = $(`
-                        <div class="wa-chat-item" data-phone="${this.escape_html(chat.phone)}">
-                            <div class="wa-avatar-small">${firstLetter}</div>
-                            <div class="wa-chat-item-info">
-                                <div class="wa-chat-item-name">${this.escape_html(chat.sender_full_name)}</div>
-                                <div class="wa-chat-item-last">${this.escape_html(truncatedMsg)}</div>
-                            </div>
-                            <div class="wa-chat-item-time">${comment_when(chat.time)}</div>
-                        </div>
-                    `);
-                    item.on('click', () => this.open_chat(chat.phone, chat.sender_full_name));
-                    list.append(item);
-                });
-            } else {
-                list.html('<div style="padding: 20px; text-align:center; color:#888;">No recent chats. Start a new conversation!</div>');
-            }
-        } catch (error) {
-            console.error('Error loading chats:', error);
-            list.html('<div style="padding: 20px; text-align:center; color:#ff4d4d;"><i class="fa fa-exclamation-triangle"></i> Failed to load chats. <a href="#" onclick="window.whatsapp_widget.load_recent_chats(); return false;">Retry</a></div>');
-        }
-    }
-
-    truncate_text(text, max_length) {
-        if (!text) return '';
-        return text.length > max_length ? text.substring(0, max_length) + '...' : text;
     }
 
     escape_html(text) {
@@ -245,27 +188,91 @@ whatsapp.chat.Widget = class {
         return div.innerHTML;
     }
 
-    async open_chat(phone, name) {
-        this.active_number = phone;
-        $('#waHeaderTitle').text(name);
-        $('#waInboxView').hide();
-        $('#waChatView').css('display', 'flex');
-        $('#waBack').show();
-        $('#waVoiceCall').show();
-        $('#waVideoCall').show();
+    truncate_text(text, max_length) {
+        if (!text) return '';
+        return text.length > max_length ? text.substring(0, max_length) + '...' : text;
+    }
 
-        $('#waMessages').empty();
-        $('#waMessages').append('<div style="text-align:center; padding:10px; font-size:12px; color:#888;">Loading history...</div>');
+    async load_recent_chats() {
+        const list = $('#waChatList');
+        list.html('<div style="padding: 20px; text-align:center; color:#888;"><i class="fa fa-spinner fa-spin"></i> Loading chats...</div>');
+
+        try {
+            const response = await frappe.call({
+                method: 'whatsapp_integration.whatsapp_integration.api.get_recent_chats',
+                args: { limit: 50 }
+            });
+
+            list.empty();
+            if (response && response.message && response.message.length) {
+                response.message.forEach(chat => {
+                    const firstLetter = chat.sender_full_name ? chat.sender_full_name[0].toUpperCase() : '?';
+                    const isGroup = chat.is_group;
+                    const avatarBg = isGroup ? '#00a884' : '#2196F3';
+
+                    const item = $(`
+                        <div class="wa-chat-item ${isGroup ? 'wa-group-item' : ''}" data-phone="${chat.phone}">
+                            <div class="wa-avatar-small" style="background:${avatarBg}">${isGroup ? '<i class="fa fa-users"></i>' : firstLetter}</div>
+                            <div class="wa-chat-item-info">
+                                <div class="wa-chat-item-name">${chat.sender_full_name}</div>
+                                <div class="wa-chat-item-last">${chat.last_msg}</div>
+                            </div>
+                            <div class="wa-chat-item-time">${comment_when(chat.time)}</div>
+                        </div>
+                    `);
+                    item.on('click', () => this.open_chat(chat.phone, chat.sender_full_name, isGroup));
+                    list.append(item);
+                });
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    async open_chat(phone, name, isGroup = false) {
+        const phoneStr = String(phone || '');
+        if (!isGroup && (phoneStr.includes('-') || phoneStr.length >= 15)) {
+            isGroup = true;
+        }
+
+        this.active_number = phoneStr;
+        this.is_active_group = isGroup;
+
+        $('#waHeaderTitle').text(name);
+        $('#waStatus').html(isGroup ? '<span style="color:#25D366; font-weight:bold;">● Group Chat (v2)</span>' : 'Checking...');
+        $('#waStatus').attr('data-is-group', isGroup ? '1' : '0');
+
+        $('#waInboxView').hide();
+        $('#waChatView').css('display', 'flex').show();
+        $('#waBack').show();
+        $('#waGroupInfo').hide();
+
+        if (isGroup) {
+            $('#waVoiceCall, #waVideoCall').hide();
+        } else {
+            $('#waVoiceCall, #waVideoCall').show();
+        }
 
         frappe.call({
             method: 'whatsapp_integration.whatsapp_integration.api.get_chat_history',
-            args: { sender_phone: phone },
+            args: { sender_phone: phoneStr },
             callback: (r) => {
                 $('#waMessages').empty();
-                if (r.message && r.message.length) {
+                if (r.message) {
                     r.message.forEach(msg => {
-                        const type = msg.message_type === 'Incoming' ? 'received' : 'sent';
-                        this.add_message(msg.message, type, msg.creation, msg.media_attachment);
+                        this.add_message(
+                            msg.message,
+                            msg.message_type === 'Incoming' ? 'received' : 'sent',
+                            msg.creation,
+                            msg.media_attachment,
+                            msg.message_status,
+                            msg.message_id,
+                            msg.reply_to_message_id,
+                            msg.reply_to_message_text,
+                            msg.sender_name,
+                            msg.sender,
+                            msg.is_group_message
+                        );
                     });
                 }
             }
@@ -274,133 +281,109 @@ whatsapp.chat.Widget = class {
 
     show_inbox() {
         this.active_number = null;
-        $('#waHeaderTitle').text('WhatsApp Inbox');
+        this.is_active_group = false;
+        $('#waStatus').attr('data-is-group', '0');
         $('#waChatView').hide();
         $('#waInboxView').show();
         $('#waBack').hide();
-        $('#waVoiceCall').hide();
-        $('#waVideoCall').hide();
+        $('#waHeaderTitle').text('WhatsApp Inbox');
         this.load_recent_chats();
+    }
+
+    show_group_info() {
+        const list = $('#waMemberList');
+        list.html('<div style="padding:20px; text-align:center;"><i class="fa fa-spinner fa-spin"></i> Loading...</div>');
+        $('#waGroupInfo').css('display', 'flex').show();
+
+        frappe.call({
+            method: 'whatsapp_integration.whatsapp_integration.api.get_group_metadata',
+            args: { group_id: this.active_number },
+            callback: (r) => {
+                if (r.message && r.message.status === 'success') {
+                    const metadata = r.message.metadata;
+                    list.empty();
+                    list.append(`<div style="padding:10px 20px; font-weight:bold;">${metadata.participants.length} Participants</div>`);
+                    metadata.participants.forEach(p => {
+                        const displayName = p.name || p.phone || p.id.split('@')[0];
+                        const displaySub = p.phone && p.phone !== displayName ? p.phone : '';
+
+                        list.append(`
+                            <div class="wa-member-item">
+                                <div class="wa-member-avatar">${displayName[0].toUpperCase()}</div>
+                                <div class="wa-member-name">
+                                    <div style="font-weight:500;">${this.escape_html(displayName)}</div>
+                                    ${displaySub ? `<div style="font-size:11px; color:#666;">${this.escape_html(displaySub)}</div>` : ''}
+                                </div>
+                                ${p.admin ? '<span class="wa-member-admin">Admin</span>' : ''}
+                            </div>
+                        `);
+                    });
+                }
+            }
+        });
+    }
+
+    add_message(text, type, time = null, media = null, status = null, messageId = null, replyTo = null, replyToText = null, senderName = null, senderId = null, isGroupMsg = null) {
+        const container = $('#waMessages');
+        const display_time = time ? moment(time).format('HH:mm') : moment().format('HH:mm');
+        const safe_text = this.escape_html(text || '');
+        let content = '';
+
+        if (replyTo || replyToText) {
+            content += `<div class="wa-msg-reply" style="border-left:3px solid #00a884; background:#f0f0f0; border-radius:5px; padding:5px 8px; font-size:12px; margin-bottom:5px;">${this.escape_html(replyToText || 'Media')}</div>`;
+        }
+
+        const phoneStr = String(this.active_number || '');
+        const isActuallyGroup = isGroupMsg === 1 || this.is_active_group || phoneStr.includes('-') || phoneStr.length >= 15;
+
+        if (isActuallyGroup && type === 'received') {
+            const name = senderName || senderId || 'Member';
+            content += `<div class="wa-msg-sender" style="font-weight:bold; color:#356de4; font-size:12px; margin-bottom:4px;">${name}</div>`;
+        }
+
+        content += safe_text;
+        if (media) {
+            content += `<br><img src="${media}" style="max-width:100%; border-radius:8px; margin-top:5px;">`;
+        }
+
+        const msg_html = $(`<div class="wa-msg wa-msg-${type}">${content}<div class="wa-msg-time">${display_time}</div></div>`);
+        container.append(msg_html);
+        container.scrollTop(container[0].scrollHeight);
     }
 
     async send_message() {
         const input = $('#waInput');
         const text = input.val().trim();
-        const btn = $('#waSend');
+        if (!text || !this.active_number) return;
 
-        // Validation
-        if (!text || btn.prop('disabled')) return;
+        input.val('').prop('disabled', true);
+        const response = await frappe.call({
+            method: 'whatsapp_integration.whatsapp_integration.api.send_chat_message',
+            args: { receiver: this.active_number, message: text }
+        });
 
-        if (!this.active_number) {
-            frappe.show_alert({ message: 'No active chat selected', indicator: 'red' });
-            return;
+        input.prop('disabled', false).focus();
+        if (response.message && response.message.status === 'sent') {
+            this.add_message(text, 'sent');
         }
-
-        // Show loading state
-        input.prop('disabled', true);
-        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
-
-        try {
-            const response = await frappe.call({
-                method: 'whatsapp_integration.whatsapp_integration.api.send_chat_message',
-                args: {
-                    message: text,
-                    receiver: this.active_number,
-                    company: this.company
-                }
-            });
-
-            // Reset UI state
-            input.prop('disabled', false);
-            btn.prop('disabled', false).html('<i class="fa fa-send"></i>');
-
-            if (response && response.message && response.message.status === 'sent') {
-                // Add message to chat
-                this.add_message(text, 'sent');
-                input.val('');
-                input.focus();
-            } else {
-                const error = response?.message?.error || "Unknown error occurred";
-                frappe.show_alert({
-                    message: `Failed to send: ${error}`,
-                    indicator: 'red'
-                });
-
-                // Log error for debugging
-                console.error('Send message error:', response);
-            }
-        } catch (error) {
-            // Reset UI state on error
-            input.prop('disabled', false);
-            btn.prop('disabled', false).html('<i class="fa fa-send"></i>');
-
-            frappe.show_alert({
-                message: 'Network error. Please check your connection.',
-                indicator: 'red'
-            });
-
-            console.error('Send message exception:', error);
-        }
-    }
-
-    add_message(text, type, time = null, media = null) {
-        const container = $('#waMessages');
-        const display_time = time ? moment(time).format('HH:mm') : moment().format('HH:mm');
-
-        // Escape text content for safety
-        let safe_text = this.escape_html(text || '');
-
-        let content = safe_text;
-        if (media) {
-            const safe_media = this.escape_html(media);
-            const is_img = media.match(/\.(jpg|jpeg|png|gif|webp)$/i);
-            if (is_img) {
-                content = `<img src="${safe_media}" style="max-width:100%; border-radius:8px; margin-bottom:5px; cursor:pointer;" onclick="window.open('${safe_media}')"><br>${safe_text}`;
-            } else {
-                content = `<a href="${safe_media}" target="_blank" style="color:#00a884; text-decoration:underline;">📎 View Attachment</a><br>${safe_text}`;
-            }
-        }
-
-        const msg_html = $(`
-            <div class="wa-msg wa-msg-${type}">
-                ${content}
-                <div class="wa-msg-time">${display_time}</div>
-            </div>
-        `);
-
-        container.append(msg_html);
-
-        // Smooth scroll to bottom
-        container.animate({
-            scrollTop: container[0].scrollHeight
-        }, 300);
     }
 
     listen_realtime() {
         frappe.realtime.on('whatsapp_incoming_message', (data) => {
-            if (this.active_number && data.from === this.active_number) {
-                this.add_message(data.text, 'received', null, data.media);
+            const isGroup = !!data.group_id;
+            const chatMatch = isGroup ? (this.active_number === data.group_id) : (this.active_number === data.from);
+            if (this.active_number && chatMatch) {
+                this.add_message(data.text, 'received', null, data.media, null, data.message_id, data.reply_to_id, data.reply_to_text, data.sender_name, data.from, isGroup ? 1 : 0);
             } else {
                 this.load_recent_chats();
-                frappe.show_alert({
-                    message: `New WhatsApp from ${data.sender_name || data.from}: ${data.text}`,
-                    indicator: 'green'
-                });
             }
         });
     }
 };
 
-// Auto-initialize when Frappe loads
-$(document).on('app_ready', function () {
-    if (!window.whatsapp_widget) {
-        window.whatsapp_widget = new whatsapp.chat.Widget();
-    }
+$(document).on('app_ready', () => {
+    if (!window.whatsapp_widget) window.whatsapp_widget = new whatsapp.chat.Widget();
 });
-
-$(document).on('page_change', function () {
-    // Ensure widget stays visible or re-renders if destroyed by SPA navigation
-    if (!$('.wa-chat-widget').length && window.whatsapp_widget) {
-        window.whatsapp_widget.render();
-    }
+$(document).on('page_change', () => {
+    if (!$('.wa-chat-widget').length && window.whatsapp_widget) window.whatsapp_widget.render();
 });

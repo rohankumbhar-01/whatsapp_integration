@@ -5,7 +5,8 @@ const {
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
     Browsers,
-    downloadMediaMessage
+    downloadMediaMessage,
+    jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
@@ -54,6 +55,8 @@ app.get('/health', (req, res) => {
 
 const sessions = new Map();
 const startingSessions = new Set(); // Tracks sessions currently in progress of connecting
+const reconnectionAttempts = new Map(); // Track reconnection attempts per session
+const lidToPhoneMap = new Map(); // Map LID to actual phone numbers
 const logger = pino({ level: 'debug' });
 
 let waVersion = [2, 3000, 1015901307];
@@ -70,14 +73,116 @@ const updateVersion = async () => {
 updateVersion();
 setInterval(updateVersion, 3600000); // Once per hour
 
+// Helper function to load LID mappings from session directory
+function loadLidMappings(sessionDir) {
+    try {
+        const files = fs.readdirSync(sessionDir);
+        let loadedCount = 0;
+
+        for (const file of files) {
+            // Look for lid-mapping-*_reverse.json files
+            if (file.startsWith('lid-mapping-') && file.endsWith('_reverse.json')) {
+                const lid = file.replace('lid-mapping-', '').replace('_reverse.json', '');
+                const filePath = path.join(sessionDir, file);
+
+                try {
+                    const phoneNumber = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    lidToPhoneMap.set(lid, phoneNumber);
+                    loadedCount++;
+                } catch (err) {
+                    console.error(`Error reading LID mapping file ${file}:`, err);
+                }
+            }
+        }
+
+        console.log(`Loaded ${loadedCount} LID-to-phone mappings from session directory`);
+    } catch (err) {
+        console.error('Error loading LID mappings:', err);
+    }
+}
+
+// Helper function to extract actual phone number from JID
+// Handles both regular JIDs and LIDs (Linked IDs)
+async function getPhoneNumberFromJid(jid, sock) {
+    try {
+        if (!jid) return null;
+
+        // Remove the server part (@s.whatsapp.net or @lid)
+        const baseJid = jid.split('@')[0];
+        const serverPart = jid.split('@')[1];
+
+        // For LID (Linked ID) format like 260477250707536@lid
+        if (serverPart === 'lid') {
+            // Check if we have this LID mapped to a phone number
+            if (lidToPhoneMap.has(baseJid)) {
+                return lidToPhoneMap.get(baseJid);
+            }
+
+            // Fallback: Query WhatsApp to resolve LID to JID
+            try {
+                const [result] = await sock.onWhatsApp(jid);
+                if (result && result.jid) {
+                    const resolvedPhone = result.jid.split('@')[0];
+                    console.log(`Resolved LID ${baseJid} to phone ${resolvedPhone} via WhatsApp query`);
+                    // Cache it
+                    lidToPhoneMap.set(baseJid, resolvedPhone);
+                    return resolvedPhone;
+                }
+            } catch (e) {
+                console.error(`Error resolving LID ${baseJid} via WhatsApp:`, e.message);
+            }
+
+            console.log(`LID ${baseJid} not found in mapping - keeping LID`);
+            return baseJid; // Return LID if no mapping found
+        }
+
+        // For group messages (g.us suffix)
+        if (serverPart === 'g.us') {
+            return baseJid;
+        }
+
+        // For regular JIDs (919075167132@s.whatsapp.net)
+        // Remove device ID if present (e.g., 919075167132:15)
+        const phoneNumber = baseJid.split(':')[0];
+
+        // Basic validation - phone numbers should be numeric
+        if (/^\d+$/.test(phoneNumber)) {
+            return phoneNumber;
+        }
+
+        console.warn(`Unexpected JID format: ${jid}`);
+        return baseJid;
+    } catch (err) {
+        console.error('Error extracting phone number from JID:', err);
+        return jid.split('@')[0].split(':')[0]; // Fallback
+    }
+}
+
 async function startSession(sessionId, webhookUrl, webhookToken) {
+    // Check if session already exists and is connected
     if (sessions.has(sessionId)) {
         const existing = sessions.get(sessionId);
-        if (existing.status === 'Connected') return { status: 'Connected' };
-        if (existing.qr && existing.status === 'QR Scan Required') return { qr: existing.qr };
+        if (existing.status === 'Connected') {
+            console.log(`Session ${sessionId} already connected, skipping`);
+            return { status: 'Connected' };
+        }
+        if (existing.qr && existing.status === 'QR Scan Required') {
+            return { qr: existing.qr };
+        }
+        // If session exists but disconnected, close old socket first
+        if (existing.sock) {
+            console.log(`Closing old socket for ${sessionId} before reconnecting`);
+            try {
+                existing.sock.end();
+            } catch (e) {
+                console.error(`Error closing old socket:`, e);
+            }
+        }
     }
 
+    // Prevent duplicate connection attempts
     if (startingSessions.has(sessionId)) {
+        console.log(`Session ${sessionId} already starting, skipping duplicate attempt`);
         return { status: 'Initializing', message: 'Session is already starting...' };
     }
 
@@ -87,6 +192,17 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
     try {
         const sessionDir = path.join(__dirname, 'sessions', sessionId);
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+        // Load LID-to-phone mappings from session directory
+        loadLidMappings(sessionDir);
+
+        // Watch for new LID mapping files and reload
+        const watcher = fs.watch(sessionDir, (eventType, filename) => {
+            if (filename && filename.startsWith('lid-mapping-') && filename.endsWith('_reverse.json')) {
+                console.log(`New LID mapping detected: ${filename}`);
+                loadLidMappings(sessionDir);
+            }
+        });
 
         const sock = makeWASocket({
             version: waVersion,
@@ -118,6 +234,19 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
         };
         sessions.set(sessionId, sessionObj);
 
+        // Save webhook config to session directory for auto-reload
+        if (webhookUrl && webhookToken) {
+            const webhookConfigPath = path.join(sessionDir, 'webhook-config.json');
+            try {
+                fs.writeFileSync(webhookConfigPath, JSON.stringify({
+                    webhookUrl,
+                    webhookToken
+                }));
+            } catch (e) {
+                console.error(`Failed to save webhook config for ${sessionId}:`, e);
+            }
+        }
+
         sock.ev.on('creds.update', saveCreds);
 
         sock.ev.on('connection.update', async (update) => {
@@ -132,26 +261,76 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
 
             if (connection === 'close') {
                 const statusCode = (lastDisconnect.error)?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401 && statusCode !== 405;
-                console.log(`Connection closed for ${sessionId}. Status: ${statusCode}. Reconnecting: ${shouldReconnect}`);
+                const errorMessage = lastDisconnect?.error?.message || 'Unknown error';
+
+                // Only delete session for explicit logout or authentication failure
+                // Don't delete for network errors, timeouts, or temporary issues
+                const shouldDeleteSession = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+
+                // Don't reconnect if:
+                // - Logged out (401)
+                // - Conflict (440) - multiple sessions with same credentials
+                // - Already connected elsewhere
+                const shouldReconnect = !shouldDeleteSession && statusCode !== 440;
+
+                // For conflict errors, don't try to reconnect - another session is active
+                if (statusCode === 440) {
+                    console.warn(`Session conflict detected for ${sessionId} - another WhatsApp Web session may be active. Stopping reconnection.`);
+                    sessions.delete(sessionId);
+                    startingSessions.delete(sessionId);
+                }
+
+                console.log(`Connection closed for ${sessionId}. Status: ${statusCode}. Error: ${errorMessage}. Reconnecting: ${shouldReconnect}`);
 
                 sessionObj.status = 'Disconnected';
-                notifyFrappe(sessionObj, 'connection.update', { status: 'Disconnected' });
+                notifyFrappe(sessionObj, 'connection.update', { status: 'Disconnected', error: errorMessage });
 
-                if (shouldReconnect) {
-                    startSession(sessionId, webhookUrl, webhookToken);
-                } else {
-                    console.log(`Logged out from phone. Clearing session ${sessionId}`);
+                if (shouldDeleteSession) {
+                    // Only delete session when explicitly logged out (401 or loggedOut reason)
+                    console.log(`Session ${sessionId} logged out. Clearing credentials.`);
                     sessions.delete(sessionId);
+                    reconnectionAttempts.delete(sessionId);
                     if (fs.existsSync(sessionDir)) {
                         fs.rmSync(sessionDir, { recursive: true, force: true });
                     }
+                } else if (shouldReconnect) {
+                    // For all other errors (network, timeout, etc), keep session and retry
+                    const attempts = reconnectionAttempts.get(sessionId) || 0;
+                    const nextAttempt = attempts + 1;
+                    reconnectionAttempts.set(sessionId, nextAttempt);
+
+                    // Exponential backoff: 5s, 10s, 20s, 40s, max 60s
+                    const delayMs = Math.min(5000 * Math.pow(2, attempts), 60000);
+
+                    console.log(`Attempting to reconnect ${sessionId} (attempt ${nextAttempt}) in ${delayMs / 1000}s with existing credentials...`);
+
+                    // Wait before reconnecting to avoid rapid reconnection loops
+                    setTimeout(() => {
+                        startSession(sessionId, webhookUrl, webhookToken);
+                    }, delayMs);
                 }
             } else if (connection === 'open') {
                 console.log(`WhatsApp Connected: ${sessionId}`);
                 sessionObj.status = 'Connected';
                 sessionObj.qr = null;
+
+                // Reset reconnection counter on successful connection
+                reconnectionAttempts.delete(sessionId);
+
                 notifyFrappe(sessionObj, 'connection.update', { status: 'Connected' });
+            }
+        });
+
+        // Listen for contacts to build LID-to-phone mapping
+        sock.ev.on('contacts.upsert', (contacts) => {
+            for (const contact of contacts) {
+                // Store mapping: contact.lid -> contact.id (phone number)
+                if (contact.lid && contact.id) {
+                    const lid = contact.lid.split('@')[0];
+                    const phone = contact.id.split('@')[0].split(':')[0];
+                    lidToPhoneMap.set(lid, phone);
+                    console.log(`Contact mapping stored: LID ${lid} -> Phone ${phone}`);
+                }
             }
         });
 
@@ -159,6 +338,17 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
             if (m.type === 'notify') {
                 for (const msg of m.messages) {
                     if (!msg.key.fromMe && msg.message) {
+                        console.log(`Incoming message from: ${msg.key.remoteJid}`);
+
+                        // Build LID-to-phone mapping from message metadata
+                        const remoteJid = msg.key.remoteJid;
+                        if (remoteJid.includes('@lid') && msg.verifiedBizName) {
+                            // This is a business account, might have phone in metadata
+                            const lid = remoteJid.split('@')[0];
+                            // Try to extract phone from pushName or other metadata
+                            console.log(`Business message - LID: ${lid}, Name: ${msg.pushName || 'Unknown'}`);
+                        }
+
                         const messageType = Object.keys(msg.message)[0];
                         const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'].includes(messageType);
 
@@ -186,19 +376,119 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
                         }
 
                         if (text || mediaPayload) {
+                            // Extract actual phone number (handles both regular JIDs and LIDs)
+                            let phoneNumber = await getPhoneNumberFromJid(msg.key.remoteJid, sock);
+
+                            // For LID messages, try multiple methods to get actual phone
+                            if (msg.key.remoteJid.includes('@lid')) {
+                                const lid = msg.key.remoteJid.split('@')[0];
+
+                                // Method 1: Check participant info (for group/broadcast messages)
+                                if (msg.key.participant) {
+                                    const participantNumber = await getPhoneNumberFromJid(msg.key.participant, sock);
+                                    console.log(`LID message - using participant: ${participantNumber} instead of LID: ${lid}`);
+                                    phoneNumber = participantNumber;
+                                }
+                                // Method 2: Check our LID-to-phone mapping
+                                else if (lidToPhoneMap.has(lid)) {
+                                    phoneNumber = lidToPhoneMap.get(lid);
+                                    console.log(`LID message - mapped ${lid} to ${phoneNumber} from contact store`);
+                                }
+                                // Method 3: Query WhatsApp for phone number using sock.onWhatsApp
+                                else {
+                                    console.warn(`LID ${lid} not in mapping - saving contact name: ${msg.pushName || 'Unknown'}`);
+                                    // Store with pushName for future reference
+                                    phoneNumber = lid; // Keep LID for now, but log it
+                                }
+                            }
+
+                            // Validate phone number is numeric
+                            if (!/^\d+$/.test(phoneNumber)) {
+                                console.warn(`Non-numeric phone number: ${phoneNumber} from JID: ${msg.key.remoteJid}, Name: ${msg.pushName || 'Unknown'}`);
+                            }
+
+                            // Check if this is a group message
+                            const isGroup = msg.key.remoteJid.endsWith('@g.us');
+                            let groupId = null;
+                            let groupName = null;
+
+                            if (isGroup) {
+                                groupId = msg.key.remoteJid.split('@')[0];
+
+                                // For group messages, the actual sender is the participant JID
+                                if (msg.key.participant) {
+                                    phoneNumber = await getPhoneNumberFromJid(msg.key.participant, sock);
+                                }
+
+                                // Try to get group name from metadata
+                                try {
+                                    const groupMetadata = await sock.groupMetadata(msg.key.remoteJid);
+                                    groupName = groupMetadata.subject;
+                                } catch (e) {
+                                    console.warn(`Could not fetch group metadata for ${groupId}`);
+                                }
+                            }
+
+                            // Check for quoted/replied message
+                            let replyTo = null;
+                            if (msg.message.extendedTextMessage?.contextInfo?.quotedMessage) {
+                                const quotedMsg = msg.message.extendedTextMessage.contextInfo.quotedMessage;
+                                const quotedText = quotedMsg.conversation ||
+                                    quotedMsg.extendedTextMessage?.text ||
+                                    quotedMsg.imageMessage?.caption ||
+                                    '[Media]';
+
+                                replyTo = {
+                                    messageId: msg.message.extendedTextMessage.contextInfo.stanzaId,
+                                    text: quotedText
+                                };
+                            }
+
                             const payload = {
                                 messages: [{
                                     id: msg.key.id,
-                                    from: msg.key.remoteJid.split('@')[0],
+                                    from: phoneNumber,
                                     text: text,
                                     timestamp: msg.messageTimestamp,
-                                    pushName: msg.pushName,
-                                    media: mediaPayload
+                                    pushName: msg.pushName || 'Unknown',
+                                    media: mediaPayload,
+                                    isGroup: isGroup,
+                                    groupId: groupId,
+                                    groupName: groupName,
+                                    replyTo: replyTo
                                 }]
                             };
                             notifyFrappe(sessionObj, 'messages.upsert', payload);
                         }
                     }
+                }
+            }
+        });
+
+        // Listen for message status updates (delivery/read receipts)
+        sock.ev.on('messages.update', async (updates) => {
+            for (const update of updates) {
+                const { key, update: statusUpdate } = update;
+
+                // statusUpdate contains: status (delivery/read), pollUpdates, reactions, etc.
+                if (statusUpdate.status) {
+                    const messageId = key.id;
+                    const status = statusUpdate.status; // Values: 1=sent, 2=delivered, 3=read
+
+                    let statusText = 'Sent';
+                    if (status === 2) statusText = 'Delivered';
+                    else if (status === 3) statusText = 'Read';
+
+                    console.log(`Message ${messageId} status updated to: ${statusText} (${status})`);
+
+                    // Notify Frappe about the status update
+                    const payload = {
+                        messageId: messageId,
+                        status: statusText,
+                        timestamp: Date.now()
+                    };
+
+                    notifyFrappe(sessionObj, 'message.status', payload);
                 }
             }
         });
@@ -312,8 +602,15 @@ app.post('/sessions/send', async (req, res) => {
     }
 
     try {
-        let cleanedReceiver = receiver.replace(/[\s\+\-]/g, '');
-        const jid = cleanedReceiver.includes('@') ? cleanedReceiver : `${cleanedReceiver}@s.whatsapp.net`;
+        let cleanedReceiver = receiver.replace(/[\s\+]/g, ''); // Don't remove - for groups
+        let jid;
+        if (cleanedReceiver.includes('@')) {
+            jid = cleanedReceiver;
+        } else if (cleanedReceiver.includes('-') || cleanedReceiver.length > 15) {
+            jid = `${cleanedReceiver}@g.us`;
+        } else {
+            jid = `${cleanedReceiver}@s.whatsapp.net`;
+        }
 
         let result;
         if (media && media.data) {
@@ -352,10 +649,40 @@ app.post('/sessions/send', async (req, res) => {
             result = await session.sock.sendMessage(jid, { text: message });
         }
 
-        console.log(`Send Success for ${sessionId}`);
-        res.json({ status: 'sent', result });
+        console.log(`Send Success for ${sessionId}, Message ID: ${result.key.id}`);
+        res.json({
+            status: 'sent',
+            messageId: result.key.id,
+            timestamp: result.messageTimestamp,
+        });
     } catch (e) {
         console.error(`Send Exception for ${sessionId}:`, e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/sessions/group-metadata', async (req, res) => {
+    const { sessionId, groupId } = req.body;
+    const session = sessions.get(sessionId);
+    if (!session || session.status !== 'Connected') {
+        return res.status(400).json({ error: 'Session not connected' });
+    }
+    try {
+        const jid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+        const metadata = await session.sock.groupMetadata(jid);
+
+        // Resolve LIDs to phone numbers for all participants
+        if (metadata.participants && metadata.participants.length) {
+            for (let p of metadata.participants) {
+                const phone = await getPhoneNumberFromJid(p.id, session.sock);
+                p.phone = phone; // Add phone number field
+                p.full_id = p.id; // Keep original ID
+            }
+        }
+
+        res.json({ status: 'success', metadata });
+    } catch (e) {
+        console.error(`Metadata Error for ${sessionId}:`, e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -392,7 +719,20 @@ app.listen(PORT, '0.0.0.0', async () => {
             if (fs.lstatSync(sessionPath).isDirectory()) {
                 console.log(`Auto-starting session: ${sessionId}`);
                 try {
-                    startSession(sessionId).catch(e => console.error(`Failed to auto-start ${sessionId}:`, e));
+                    // Try to load webhook config
+                    let webhookUrl, webhookToken;
+                    const webhookConfigPath = path.join(sessionPath, 'webhook-config.json');
+                    if (fs.existsSync(webhookConfigPath)) {
+                        try {
+                            const webhookConfig = JSON.parse(fs.readFileSync(webhookConfigPath, 'utf8'));
+                            webhookUrl = webhookConfig.webhookUrl;
+                            webhookToken = webhookConfig.webhookToken;
+                            console.log(`Loaded webhook config for ${sessionId}`);
+                        } catch (e) {
+                            console.error(`Failed to load webhook config for ${sessionId}:`, e);
+                        }
+                    }
+                    startSession(sessionId, webhookUrl, webhookToken).catch(e => console.error(`Failed to auto-start ${sessionId}:`, e));
                 } catch (err) {
                     console.error(`Error starting session ${sessionId}:`, err);
                 }

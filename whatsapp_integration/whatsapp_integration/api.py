@@ -13,18 +13,21 @@ from whatsapp_integration.whatsapp_integration.doctype.whatsapp_settings.whatsap
 
 def validate_phone_number(phone: str) -> Optional[str]:
     """
-    Validate and clean phone number.
-    Returns cleaned number or None if invalid.
+    Validate and clean phone number or group ID.
+    Returns cleaned string or None if invalid.
     """
     if not phone:
         return None
 
-    # Remove all non-digit characters
-    cleaned = re.sub(r'[^\d+]', '', phone)
-    cleaned = cleaned.lstrip('+')
+    # Check if it's already a group ID or LID
+    if "@" in phone or "-" in phone or (phone.isdigit() and len(phone) > 15):
+        return phone
 
-    # Must be between 10-15 digits
-    if len(cleaned) < 10 or len(cleaned) > 15:
+    # Remove all non-digit characters for regular numbers
+    cleaned = re.sub(r'[^\d]', '', phone)
+    
+    # Must be between 10-15 digits for regular numbers
+    if len(cleaned) < 10 or len(cleaned) > 16:
         return None
 
     return cleaned
@@ -249,6 +252,8 @@ def handle_callback():
             handle_connection_update(doc_name, doc, data)
         elif event == "messages.upsert":
             handle_messages_upsert(doc, data)
+        elif event == "message.status":
+            handle_message_status(doc, data)
         else:
             frappe.logger().warning(f"Unknown webhook event: {event}")
 
@@ -291,6 +296,7 @@ def handle_connection_update(doc_name: str, doc, data: Dict[str, Any]):
 
 def handle_messages_upsert(doc, data: Dict[str, Any]):
     """Handle incoming messages from Node.js service."""
+    frappe.logger().debug(f"WhatsApp handle_messages_upsert: Received {len(data.get('messages', []))} messages")
     messages = data.get("messages", [])
     if not messages:
         return
@@ -298,11 +304,11 @@ def handle_messages_upsert(doc, data: Dict[str, Any]):
     for msg in messages:
         try:
             wm = handle_incoming_message(doc, msg)
-
-            # Notify UI in real-time
             if wm:
+                frappe.db.commit()
+                # Notify UI in real-time
                 frappe.publish_realtime("whatsapp_incoming_message", {
-                    "from": msg.get("from"),
+                    "from": wm.sender,
                     "text": msg.get("text", ""),
                     "sender_name": msg.get("pushName"),
                     "media": wm.media_attachment if wm.media_attachment else None
@@ -312,6 +318,39 @@ def handle_messages_upsert(doc, data: Dict[str, Any]):
                 f"Error handling incoming message: {str(e)}\n{frappe.get_traceback()}",
                 "WhatsApp Incoming Message Error"
             )
+
+def handle_message_status(doc, data: Dict[str, Any]):
+    """Handle message status updates (delivery/read receipts) from Node.js service."""
+    message_id = data.get("messageId")
+    status = data.get("status")
+
+    if not message_id or not status:
+        return
+
+    try:
+        # Find the message by message_id
+        existing = frappe.db.exists("WhatsApp Message", {"message_id": message_id})
+
+        if existing:
+            # Update the message status
+            frappe.db.set_value("WhatsApp Message", existing, "message_status", status)
+            frappe.db.commit()
+
+            frappe.logger().info(f"Updated message {message_id} status to {status}")
+
+            # Publish real-time event for UI update
+            frappe.publish_realtime("whatsapp_message_status", {
+                "messageId": message_id,
+                "status": status
+            })
+        else:
+            frappe.logger().warning(f"Message {message_id} not found in database for status update")
+
+    except Exception as e:
+        frappe.log_error(
+            f"Error updating message status: {str(e)}\n{frappe.get_traceback()}",
+            "WhatsApp Message Status Error"
+        )
 
 # ============================================================================
 # API ENDPOINTS - SYSTEM STATUS & CHAT
@@ -391,7 +430,7 @@ def get_recent_chats(limit: int = 50) -> List[Dict[str, Any]]:
     try:
         limit = min(int(limit), 100)  # Cap at 100
 
-        # Optimized query to get unique contacts with their last message
+        # Optimized query to get unique contacts (and groups) with their last message
         messages = frappe.db.sql("""
             WITH RankedMessages AS (
                 SELECT
@@ -401,8 +440,12 @@ def get_recent_chats(limit: int = 50) -> List[Dict[str, Any]]:
                     creation as time,
                     receiver,
                     message_type,
+                    is_group_message,
+                    group_id,
+                    group_name,
                     ROW_NUMBER() OVER (
                         PARTITION BY CASE
+                            WHEN is_group_message = 1 THEN group_id
                             WHEN sender = 'Me' THEN receiver
                             ELSE sender
                         END
@@ -418,7 +461,10 @@ def get_recent_chats(limit: int = 50) -> List[Dict[str, Any]]:
                 last_msg,
                 time,
                 receiver,
-                message_type
+                message_type,
+                is_group_message,
+                group_id,
+                group_name
             FROM RankedMessages
             WHERE rn = 1
             ORDER BY time DESC
@@ -427,17 +473,29 @@ def get_recent_chats(limit: int = 50) -> List[Dict[str, Any]]:
 
         unique_chats = []
         for m in messages:
-            # Determine the other party's phone number
-            phone = m.receiver if m.sender == "Me" else m.sender
-            if not phone or phone == "Me":
-                continue
+            is_group = m.get("is_group_message") == 1
+            
+            if is_group:
+                phone = m.group_id
+                display_name = m.group_name or f"Group: {m.group_id}"
+                last_msg_text = f"{m.sender_name}: {m.last_msg}" if m.sender != "Me" else f"You: {m.last_msg}"
+            else:
+                # Determine the other party's phone number
+                phone = m.receiver if m.sender == "Me" else m.sender
+                if not phone or phone == "Me":
+                    continue
+                
+                # Get display name
+                display_name = m.sender_name if m.sender != "Me" else None
+                last_msg_text = m.last_msg
 
-            # Clean phone number
-            clean_phone = phone.split('@')[0].replace('+', '')
+            # Clean phone number (leave group IDs as is)
+            if not is_group:
+                clean_phone = phone.split('@')[0].replace('+', '')
+            else:
+                clean_phone = phone
 
-            # Get display name
-            display_name = m.sender_name if m.sender != "Me" else None
-            if not display_name:
+            if not display_name and not is_group:
                 # Try to find contact by phone
                 contact = frappe.db.get_value(
                     "Contact",
@@ -450,9 +508,10 @@ def get_recent_chats(limit: int = 50) -> List[Dict[str, Any]]:
             unique_chats.append({
                 "phone": clean_phone,
                 "sender_full_name": display_name,
-                "last_msg": m.last_msg[:100] if m.last_msg else "",  # Truncate long messages
+                "last_msg": last_msg_text[:100] if last_msg_text else "",  # Truncate long messages
                 "time": m.time,
-                "message_type": m.message_type
+                "message_type": m.message_type,
+                "is_group": is_group
             })
 
         return unique_chats
@@ -532,44 +591,79 @@ def search_contacts(query: str, limit: int = 20) -> List[Dict[str, Any]]:
 @rate_limit(limit=60, seconds=60)
 def get_chat_history(sender_phone: str, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
     """
-    Get chat history with a specific contact.
-    Supports pagination via limit and offset.
+    Get chat history with a specific contact or group.
     """
     try:
         if not sender_phone:
             return []
 
-        # Validate and clean phone number
-        search_term = sender_phone.split("@")[0] if "@" in sender_phone else sender_phone
-        search_term = validate_phone_number(search_term)
-
-        if not search_term:
-            return []
+        # Check if this is a group ID (usually contains @ or is very long)
+        is_group_id = "-" in sender_phone or "@g.us" in sender_phone or len(sender_phone) > 15
+        
+        # Validate and clean phone number if it's not a group ID
+        if not is_group_id:
+            search_term = validate_phone_number(sender_phone)
+            if not search_term:
+                return []
+        else:
+            search_term = sender_phone
 
         # Cap limits
         limit = min(int(limit), 500)
         offset = max(int(offset), 0)
 
-        # Optimized query with proper indexing hints
-        messages = frappe.db.sql("""
-            SELECT
-                sender,
-                sender_name,
-                receiver,
-                message,
-                creation,
-                message_type,
-                media_attachment,
-                message_id
-            FROM `tabWhatsApp Message`
-            WHERE (sender LIKE %(search)s OR receiver LIKE %(search)s)
-            ORDER BY creation ASC
-            LIMIT %(limit)s OFFSET %(offset)s
-        """, {
-            "search": f"%{search_term}%",
-            "limit": limit,
-            "offset": offset
-        }, as_dict=1)
+        if is_group_id:
+            # Query for group messages
+            messages = frappe.db.sql("""
+                SELECT
+                    sender,
+                    sender_name,
+                    receiver,
+                    message,
+                    creation,
+                    message_type,
+                    media_attachment,
+                    message_id,
+                    message_status,
+                    reply_to_message_id,
+                    reply_to_message_text,
+                    is_group_message,
+                    group_id,
+                    group_name
+                FROM `tabWhatsApp Message`
+                WHERE group_id = %(search)s
+                ORDER BY creation ASC
+                LIMIT %(limit)s OFFSET %(offset)s
+            """, {
+                "search": search_term,
+                "limit": limit,
+                "offset": offset
+            }, as_dict=1)
+        else:
+            # Query for individual messages
+            messages = frappe.db.sql("""
+                SELECT
+                    sender,
+                    sender_name,
+                    receiver,
+                    message,
+                    creation,
+                    message_type,
+                    media_attachment,
+                    message_id,
+                    message_status,
+                    reply_to_message_id,
+                    reply_to_message_text
+                FROM `tabWhatsApp Message`
+                WHERE (sender LIKE %(search)s OR receiver LIKE %(search)s)
+                AND (is_group_message = 0 OR is_group_message IS NULL)
+                ORDER BY creation ASC
+                LIMIT %(limit)s OFFSET %(offset)s
+            """, {
+                "search": f"%{search_term}%",
+                "limit": limit,
+                "offset": offset
+            }, as_dict=1)
 
         return messages
 
@@ -645,7 +739,8 @@ def send_chat_message(message: str, receiver: str, company: Optional[str] = None
 
         # Save message in chat history
         if response.get("status") == "sent":
-            msg_id = response.get("result", {}).get("key", {}).get("id")
+            # Try to get messageId from top level first (new format), fallback to nested (old format)
+            msg_id = response.get("messageId") or response.get("result", {}).get("key", {}).get("id")
             save_whatsapp_msg(receiver, message, "Outgoing", company, msg_id, media=media)
 
         frappe.db.commit()
@@ -656,6 +751,56 @@ def send_chat_message(message: str, receiver: str, company: Optional[str] = None
             f"Error sending chat message: {str(e)}\n{frappe.get_traceback()}",
             "WhatsApp Send Message Error"
         )
+        return {"status": "error", "error": str(e)}
+
+@frappe.whitelist()
+def get_group_metadata(group_id, company=None):
+    """
+    Fetch group info and participants from Node.js service.
+    """
+    try:
+        if not company:
+            company = get_default_company() or frappe.defaults.get_default("company")
+            
+        settings_name = frappe.db.get_value(
+            "WhatsApp Settings",
+            {"company": company, "integration_enabled": 1},
+            "name"
+        )
+        
+        if not settings_name:
+            return {"status": "error", "error": "WhatsApp Settings not found"}
+            
+        settings = frappe.get_doc("WhatsApp Settings", settings_name)
+        node_url = settings.node_url or "http://127.0.0.1:3000"
+        session_id = settings.name.replace(" ", "_")
+        
+        response = requests.post(f"{node_url}/sessions/group-metadata", json={
+            "sessionId": session_id,
+            "groupId": group_id
+        }, timeout=10)
+        result = response.json()
+        
+        # Enrich participants with names from Frappe
+        if result.get("status") == "success" and "metadata" in result:
+            participants = result["metadata"].get("participants", [])
+            for p in participants:
+                phone = p.get("phone")
+                if not phone: continue
+                
+                # 1. Try to find name in Contacts
+                name = frappe.db.get_value("Contact", {"mobile_no": ["like", f"%{phone}%"]}, "full_name")
+                
+                # 2. Try to find name in WhatsApp Message history
+                if not name:
+                    name = frappe.db.get_value("WhatsApp Message", {"sender": phone}, "sender_name")
+                
+                if name:
+                    p["name"] = name
+                    
+        return result
+    except Exception as e:
+        frappe.log_error(f"Error fetching group metadata: {str(e)}\n{frappe.get_traceback()}", "WhatsApp Group Metadata Error")
         return {"status": "error", "error": str(e)}
 
 # ============================================================================
@@ -669,19 +814,75 @@ def save_whatsapp_msg(
     company: str,
     msg_id: Optional[str] = None,
     sender_name: Optional[str] = None,
-    media: Optional[Dict] = None
+    media: Optional[Dict] = None,
+    is_group: bool = False,
+    group_id: Optional[str] = None,
+    group_name: Optional[str] = None,
+    reply_to: Optional[Dict] = None
 ):
     """
     Save a WhatsApp message to database.
     Handles deduplication, contact linking, and media attachments.
+    Automatically detects group messages if ID looks like a group.
     """
     try:
+        # Detect group message automatically if group ID looks group-y
+        is_group_id = "-" in phone or "@g.us" in phone or (phone.isdigit() and len(phone) > 15)
+        if is_group_id and not is_group:
+            is_group = True
+            group_id = phone
+            
+            # Try to fetch existing group name from database if not provided
+            if not group_name:
+                group_name = frappe.db.get_value("WhatsApp Message", {"group_id": group_id}, "group_name")
         # Check if message already exists (prevent duplicates)
         if msg_id and frappe.db.exists("WhatsApp Message", {"message_id": msg_id}):
             return frappe.get_doc("WhatsApp Message", {"message_id": msg_id})
 
         # Clean and validate phone number
-        real_phone = validate_phone_number(phone.split('@')[0] if '@' in phone else phone)
+        raw_phone = phone.split('@')[0] if '@' in phone else phone
+        real_phone = validate_phone_number(raw_phone)
+        
+        # LID Resolution: WhatsApp sometimes sends internal IDs (LIDs) instead of phone numbers.
+        # These are usually 14+ digits long and may start with 10, 86, etc.
+        if real_phone and len(real_phone) >= 14:
+            frappe.logger().debug(f"Detected potential LID: {real_phone} for sender: {sender_name}")
+            if sender_name:
+                # Try to find a contact by name and get their real mobile number
+                # Try exact match first
+                contact_info = frappe.db.get_value(
+                    "Contact", 
+                    {"full_name": sender_name.strip()}, 
+                    ["mobile_no", "phone"], 
+                    as_dict=True
+                )
+                
+                if not contact_info:
+                    # Try LIKE match
+                    contact_info = frappe.db.get_value(
+                        "Contact", 
+                        {"full_name": ["like", f"%{sender_name.strip()}%"]}, 
+                        ["mobile_no", "phone"], 
+                        as_dict=True
+                    )
+                
+                # Check both mobile_no and phone fields
+                contact_phone = None
+                if contact_info:
+                    contact_phone = contact_info.get("mobile_no") or contact_info.get("phone")
+                
+                if contact_phone:
+                    resolved_phone = validate_phone_number(contact_phone)
+                    if resolved_phone:
+                        frappe.logger().info(f"SUCCESS: Resolved LID {raw_phone} to {resolved_phone} via Contact {sender_name}")
+                        real_phone = resolved_phone
+                    else:
+                        frappe.logger().warning(f"WAIT: Found contact {sender_name} for LID {raw_phone} but mobile_no {contact_phone} is invalid")
+                else:
+                    frappe.logger().warning(f"FAIL: Could not resolve LID {raw_phone} - no contact phone found for name '{sender_name}'")
+            else:
+                frappe.logger().warning(f"FAIL: Could not resolve LID {raw_phone} - sender_name is empty")
+
         if not real_phone:
             frappe.logger().warning(f"Invalid phone number: {phone}")
             return None
@@ -708,6 +909,21 @@ def save_whatsapp_msg(
         wm.message = sanitize_message(text) if text else ""
         wm.message_type = msg_type
         wm.message_id = msg_id
+        # Set initial status
+        # Outgoing: Sent (will update to Delivered/Read via receipts)
+        # Incoming: Already delivered to us
+        wm.message_status = "Sent" if msg_type == "Outgoing" else None
+
+        # Group message fields
+        wm.is_group_message = 1 if is_group else 0
+        if is_group:
+            wm.group_id = group_id
+            wm.group_name = group_name
+
+        # Reply/quote fields
+        if reply_to:
+            wm.reply_to_message_id = reply_to.get("messageId")
+            wm.reply_to_message_text = reply_to.get("text")
 
         if msg_type == "Incoming":
             wm.sender = real_phone
@@ -771,10 +987,20 @@ def handle_incoming_message(settings_doc, msg: Dict[str, Any]):
         content = msg.get("text", "")
         sender_name = msg.get("pushName") or sender_phone
         media = msg.get("media")
+        is_group = msg.get("isGroup", False)
+        group_id = msg.get("groupId")
+        group_name = msg.get("groupName")
+        reply_to = msg.get("replyTo")
 
         if not sender_phone:
             frappe.logger().warning("Incoming message without sender phone")
             return None
+
+        # Skip group messages or handle them separately
+        if is_group:
+            frappe.logger().info(f"Group message received from {group_name or group_id}: {sender_name} - {content[:50]}")
+            # You can choose to save group messages separately or skip them
+            # For now, we'll save them with group info
 
         wm = save_whatsapp_msg(
             phone=sender_phone,
@@ -783,7 +1009,11 @@ def handle_incoming_message(settings_doc, msg: Dict[str, Any]):
             company=settings_doc.company,
             msg_id=msg_id,
             sender_name=sender_name,
-            media=media
+            media=media,
+            is_group=is_group,
+            group_id=group_id,
+            group_name=group_name,
+            reply_to=reply_to
         )
 
         frappe.db.commit()
