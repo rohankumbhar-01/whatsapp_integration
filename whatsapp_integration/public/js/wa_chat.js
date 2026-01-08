@@ -156,8 +156,10 @@ whatsapp.chat.Widget = class {
                 const status = response.message.status;
                 const statusEl = $('#waStatus');
 
-                if (statusEl.attr('data-is-group') === '1') {
-                    statusEl.html('<span style="color:#25D366; font-weight:bold;">● Group Chat (v2)</span>');
+                if (statusEl.attr('data-is-group') === '1' || this.active_number) {
+                    if (statusEl.attr('data-is-group') === '1') {
+                        statusEl.html('<span style="color:#25D366; font-weight:bold;">● Group Chat (v2)</span>');
+                    }
                     return;
                 }
 
@@ -251,6 +253,11 @@ whatsapp.chat.Widget = class {
             $('#waVoiceCall, #waVideoCall').hide();
         } else {
             $('#waVoiceCall, #waVideoCall').show();
+            // Subscribe to presence for individual chat
+            frappe.call({
+                method: 'whatsapp_integration.whatsapp_integration.api.subscribe_contact_presence',
+                args: { phone: phoneStr }
+            });
         }
 
         frappe.call({
@@ -377,6 +384,43 @@ whatsapp.chat.Widget = class {
             } else {
                 this.load_recent_chats();
             }
+        });
+
+        frappe.realtime.on('whatsapp_presence_update', (data) => {
+            if (this.active_number && data.from === this.active_number) {
+                this.handle_presence(data.presence);
+            }
+        });
+    }
+
+    handle_presence(presences) {
+        if (!presences) return;
+        const statusEl = $('#waStatus');
+
+        // Baileys sends it as { lastKnownPresence: 'available', lastSeen?: number }
+        const p = presences.lastKnownPresence;
+        const lastSeen = presences.lastSeen;
+
+        let text = 'Offline';
+        let color = '#888';
+
+        if (p === 'composing') {
+            text = 'Typing...';
+            color = '#25D366';
+        } else if (p === 'recording') {
+            text = 'Recording audio...';
+            color = '#25D366';
+        } else if (p === 'available') {
+            text = 'Online';
+            color = '#25D366';
+        } else if (lastSeen) {
+            text = `Last seen ${moment.unix(lastSeen).fromNow()}`;
+            color = '#888';
+        }
+
+        statusEl.text(text).css({
+            'color': color,
+            'font-weight': (text === 'Online' || text === 'Typing...' || text === 'Recording audio...') ? 'bold' : 'normal'
         });
     }
 };

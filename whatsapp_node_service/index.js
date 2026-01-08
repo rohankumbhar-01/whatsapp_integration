@@ -361,6 +361,13 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
             }
         });
 
+        sock.ev.on('presence.update', async (update) => {
+            const { id, presences } = update;
+            // Get actual phone number from JID
+            const from = await getPhoneNumberFromJid(id, sock);
+            notifyFrappe(sessionObj, 'presence.update', { from, presences });
+        });
+
         sock.ev.on('messages.upsert', async (m) => {
             if (m.type === 'notify') {
                 for (const msg of m.messages) {
@@ -710,6 +717,23 @@ app.post('/sessions/group-metadata', async (req, res) => {
         res.json({ status: 'success', metadata });
     } catch (e) {
         console.error(`Metadata Error for ${sessionId}:`, e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/sessions/subscribe-presence', async (req, res) => {
+    const { sessionId, phone } = req.body;
+    const session = sessions.get(sessionId);
+    if (!session || session.status !== 'Connected') {
+        return res.status(400).json({ error: 'Session not connected' });
+    }
+    try {
+        let cleanedPhone = phone.replace(/[\s\+\-]/g, '');
+        const jid = cleanedPhone.includes('@') ? cleanedPhone : `${cleanedPhone}@s.whatsapp.net`;
+        await session.sock.presenceSubscribe(jid);
+        res.json({ status: 'success', message: `Subscribed to presence of ${jid}` });
+    } catch (e) {
+        console.error(`Presence Subscribe Error for ${sessionId}:`, e);
         res.status(500).json({ error: e.message });
     }
 });

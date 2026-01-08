@@ -255,6 +255,8 @@ def handle_callback():
             handle_messages_upsert(doc, data)
         elif event == "message.status":
             handle_message_status(doc, data)
+        elif event == "presence.update":
+            handle_presence_update(doc, data)
         else:
             frappe.logger().warning(f"Unknown webhook event: {event}")
 
@@ -353,9 +355,53 @@ def handle_message_status(doc, data: Dict[str, Any]):
             "WhatsApp Message Status Error"
         )
 
+def handle_presence_update(doc, data: Dict[str, Any]):
+    """Handle contact presence updates (online/offline/last seen)."""
+    from_jid = data.get("from")
+    presences = data.get("presences")
+    
+    if not from_jid or not presences:
+        return
+
+    # presences is a map like { "lastKnownPresence": "available", "lastSeen": 1600000000 }
+    # but Baileys format is often: { jid: { lastKnownPresence: 'available' } } 
+    # and the webhook receives one contact at a time usually
+    
+    # Notify UI in real-time
+    frappe.publish_realtime("whatsapp_presence_update", {
+        "from": from_jid,
+        "presence": presences
+    })
+
 # ============================================================================
 # API ENDPOINTS - SYSTEM STATUS & CHAT
 # ============================================================================
+
+@frappe.whitelist()
+def subscribe_contact_presence(phone: str, company: Optional[str] = None):
+    """
+    Subscribe to real-time status updates for a contact.
+    """
+    try:
+        if not company:
+            company = get_default_company() or frappe.defaults.get_default("company")
+            
+        settings_name = frappe.db.get_value("WhatsApp Settings", {"company": company, "integration_enabled": 1}, "name")
+        if not settings_name:
+            return {"status": "error", "message": "Settings not found"}
+            
+        settings = frappe.get_doc("WhatsApp Settings", settings_name)
+        node_url = settings.node_url or "http://127.0.0.1:3000"
+        session_id = settings.name.replace(" ", "_")
+        
+        requests.post(f"{node_url}/sessions/subscribe-presence", json={
+            "sessionId": session_id,
+            "phone": phone
+        }, timeout=5)
+        
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @frappe.whitelist()
 def get_system_status(company: Optional[str] = None) -> Dict[str, Any]:
