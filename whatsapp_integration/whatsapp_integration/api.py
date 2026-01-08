@@ -358,19 +358,15 @@ def handle_message_status(doc, data: Dict[str, Any]):
 def handle_presence_update(doc, data: Dict[str, Any]):
     """Handle contact presence updates (online/offline/last seen)."""
     from_jid = data.get("from")
-    presences = data.get("presences")
+    presence = data.get("presence")
     
-    if not from_jid or not presences:
+    if not from_jid or not presence:
         return
 
-    # presences is a map like { "lastKnownPresence": "available", "lastSeen": 1600000000 }
-    # but Baileys format is often: { jid: { lastKnownPresence: 'available' } } 
-    # and the webhook receives one contact at a time usually
-    
     # Notify UI in real-time
     frappe.publish_realtime("whatsapp_presence_update", {
         "from": from_jid,
-        "presence": presences
+        "presence": presence
     })
 
 # ============================================================================

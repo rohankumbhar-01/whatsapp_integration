@@ -244,6 +244,16 @@ whatsapp.chat.Widget = class {
         $('#waStatus').html(isGroup ? '<span style="color:#25D366; font-weight:bold;">● Group Chat (v2)</span>' : 'Checking...');
         $('#waStatus').attr('data-is-group', isGroup ? '1' : '0');
 
+        // Safety fallback if presence event doesn't arrive
+        if (!isGroup) {
+            setTimeout(() => {
+                const statusEl = $('#waStatus');
+                if (statusEl.text() === 'Checking...' && this.active_number === phoneStr) {
+                    statusEl.text('Offline').css('color', '#888');
+                }
+            }, 4000);
+        }
+
         $('#waInboxView').hide();
         $('#waChatView').css('display', 'flex').show();
         $('#waBack').show();

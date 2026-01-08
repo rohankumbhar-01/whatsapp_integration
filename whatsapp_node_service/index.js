@@ -363,9 +363,13 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
 
         sock.ev.on('presence.update', async (update) => {
             const { id, presences } = update;
-            // Get actual phone number from JID
             const from = await getPhoneNumberFromJid(id, sock);
-            notifyFrappe(sessionObj, 'presence.update', { from, presences });
+            const presence = presences[id];
+
+            if (presence) {
+                console.log(`Presence update for ${from}: ${JSON.stringify(presence)}`);
+                notifyFrappe(sessionObj, 'presence.update', { from, presence });
+            }
         });
 
         sock.ev.on('messages.upsert', async (m) => {
