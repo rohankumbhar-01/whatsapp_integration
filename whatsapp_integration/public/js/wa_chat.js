@@ -405,6 +405,11 @@ whatsapp.chat.Widget = class {
 
     handle_presence(presences) {
         if (!presences) return;
+        console.group("WhatsApp Presence Update");
+        console.log("From:", this.active_number);
+        console.log("Data:", presences);
+        console.groupEnd();
+
         const statusEl = $('#waStatus');
 
         // Baileys sends it as { lastKnownPresence: 'available', lastSeen?: number }
@@ -423,6 +428,9 @@ whatsapp.chat.Widget = class {
         } else if (p === 'available') {
             text = 'Online';
             color = '#25D366';
+        } else if (p === 'unavailable') {
+            text = lastSeen ? `Last seen ${moment.unix(lastSeen).fromNow()}` : 'Offline';
+            color = '#888';
         } else if (lastSeen) {
             text = `Last seen ${moment.unix(lastSeen).fromNow()}`;
             color = '#888';

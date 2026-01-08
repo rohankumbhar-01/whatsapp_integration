@@ -364,10 +364,23 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
         sock.ev.on('presence.update', async (update) => {
             const { id, presences } = update;
             const from = await getPhoneNumberFromJid(id, sock);
-            const presence = presences[id];
+
+            // In Baileys, presences keys might be full JIDs (including device index)
+            let presence = presences[id];
+
+            // If not found by full ID, try normalized ID
+            if (!presence) {
+                const normalizedId = `${from}@s.whatsapp.net`;
+                presence = presences[normalizedId];
+            }
+
+            // Fallback: Use the first value in presences if it's a 1:1 chat
+            if (!presence && Object.keys(presences).length > 0) {
+                presence = Object.values(presences)[0];
+            }
 
             if (presence) {
-                console.log(`Presence update for ${from}: ${JSON.stringify(presence)}`);
+                console.log(`Presence update for ${from} (${id}): ${JSON.stringify(presence)}`);
                 notifyFrappe(sessionObj, 'presence.update', { from, presence });
             }
         });
