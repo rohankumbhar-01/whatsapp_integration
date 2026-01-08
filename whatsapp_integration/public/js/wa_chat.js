@@ -237,7 +237,9 @@ whatsapp.chat.Widget = class {
             isGroup = true;
         }
 
-        this.active_number = phoneStr;
+        // Clean phone number for matching with backend
+        const cleanedPhone = isGroup ? phoneStr : phoneStr.replace(/[\s\+\-]/g, '');
+        this.active_number = cleanedPhone;
         this.is_active_group = isGroup;
 
         $('#waHeaderTitle').text(name);
@@ -248,10 +250,10 @@ whatsapp.chat.Widget = class {
         if (!isGroup) {
             setTimeout(() => {
                 const statusEl = $('#waStatus');
-                if (statusEl.text() === 'Checking...' && this.active_number === phoneStr) {
+                if (statusEl.text() === 'Checking...' && this.active_number === cleanedPhone) {
                     statusEl.text('Offline').css('color', '#888');
                 }
-            }, 4000);
+            }, 10000); // 10s wait for slow networks
         }
 
         $('#waInboxView').hide();
@@ -266,13 +268,13 @@ whatsapp.chat.Widget = class {
             // Subscribe to presence for individual chat
             frappe.call({
                 method: 'whatsapp_integration.whatsapp_integration.api.subscribe_contact_presence',
-                args: { phone: phoneStr }
+                args: { phone: cleanedPhone } // Cleaned for presence subscribe
             });
         }
 
         frappe.call({
             method: 'whatsapp_integration.whatsapp_integration.api.get_chat_history',
-            args: { sender_phone: phoneStr },
+            args: { sender_phone: phoneStr }, // Original for history
             callback: (r) => {
                 $('#waMessages').empty();
                 if (r.message) {
@@ -428,11 +430,14 @@ whatsapp.chat.Widget = class {
         } else if (p === 'available') {
             text = 'Online';
             color = '#25D366';
-        } else if (p === 'unavailable') {
-            text = lastSeen ? `Last seen ${moment.unix(lastSeen).fromNow()}` : 'Offline';
-            color = '#888';
-        } else if (lastSeen) {
-            text = `Last seen ${moment.unix(lastSeen).fromNow()}`;
+        } else if (p === 'unavailable' || lastSeen) {
+            let ts = lastSeen;
+            if (ts) {
+                if (ts > 9999999999) ts = ts / 1000; // MS to Seconds
+                text = `Last seen ${moment.unix(ts).fromNow()}`;
+            } else {
+                text = 'Offline';
+            }
             color = '#888';
         }
 

@@ -380,6 +380,11 @@ async function startSession(sessionId, webhookUrl, webhookToken) {
             }
 
             if (presence) {
+                // Ensure lastSeen is a number if it's a Date
+                if (presence.lastSeen instanceof Date) {
+                    presence.lastSeen = Math.floor(presence.lastSeen.getTime() / 1000);
+                }
+
                 console.log(`Presence update for ${from} (${id}): ${JSON.stringify(presence)}`);
                 notifyFrappe(sessionObj, 'presence.update', { from, presence });
             }
@@ -748,6 +753,13 @@ app.post('/sessions/subscribe-presence', async (req, res) => {
         let cleanedPhone = phone.replace(/[\s\+\-]/g, '');
         const jid = cleanedPhone.includes('@') ? cleanedPhone : `${cleanedPhone}@s.whatsapp.net`;
         await session.sock.presenceSubscribe(jid);
+
+        // Proactive check to trigger potential metadata updates
+        try {
+            await session.sock.onWhatsApp(jid);
+            console.log(`Proactive check sent for ${jid} during presence subscription`);
+        } catch (err) { }
+
         res.json({ status: 'success', message: `Subscribed to presence of ${jid}` });
     } catch (e) {
         console.error(`Presence Subscribe Error for ${sessionId}:`, e);
