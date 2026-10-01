@@ -2,7 +2,7 @@ app_name = "whatsapp_integration"
 app_title = "Whatsapp Integration"
 app_publisher = "Rohan Kumbhar"
 app_description = "Integration for WhatsApp Web using Node.js service"
-app_email = "rohan@dexciss.com"
+app_email = "rkumbhar@dexciss.io"
 app_license = "mit"
 
 # Apps
